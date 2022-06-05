@@ -1,0 +1,186 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * Horus Hiero
+ *
+ * This script generates PNG-images from hieroglyphic fonts, by extracting
+ * the Unicode glyphs in the range 0x13000 to 0x1342E. The result is 1071
+ * image files written to a given directory. A script containing the metrics
+ * for the image glyphs is also generated and named "metrics-[font name].php".
+ *
+ * @author Per Löwgren
+ * @date Modified: 2016-01-07
+ * @date Created: 2013-01-02
+ */
+
+function utf8_ord($ch) {
+    $len = strlen($ch);
+    if($len<=0) return false;
+    $h = ord($ch[0]);
+    if($h<=0x7F) return $h;
+    if($h<0xC2) return false;
+    if($h<=0xDF && $len>1) return ($h&0x1F)<<6|(ord($ch[1])&0x3F);
+    if($h<=0xEF && $len>2) return ($h&0x0F)<<12|(ord($ch[1])&0x3F)<<6|(ord($ch[2])&0x3F);
+    if($h<=0xF4 && $len>3) return ($h&0x0F)<<18|(ord($ch[1])&0x3F)<<12|(ord($ch[2])&0x3F)<<6|(ord($ch[3])&0x3F);
+    return false;
+}
+
+function utf8_chr($num) {
+    if($num<0x80) return chr($num);
+    if($num<0x800) return chr(($num>>6)+0xC0)
+                          .chr(($num&0x3F)+0x80);
+    if($num<0x10000) return chr(($num>>12)+0xE0)
+                            .chr((($num>>6)&0x3F)+0x80)
+                            .chr(($num&0x3F)+0x80);
+    if($num<0x200000) return chr(($num>>18)+0xF0)
+                             .chr((($num>>12)&0x3F)+0x80)
+                             .chr((($num>>6)&0x3F)+0x80)
+                             .chr(($num&0x3F)+0x80);
+    return false;
+}
+
+function command_check($cmd,$message) {
+    global $red,$none;
+    $return = shell_exec(sprintf("which %s",escapeshellarg($cmd)));
+    if(empty($return)) die("{$red}$message$none");
+}
+
+define('ROOT_DIR',realpath(__DIR__.'/..'));
+const SRC_DIR = ROOT_DIR.'/src';
+
+$glyphs = require SRC_DIR.'/glyphs.php';
+
+$fonts = [
+    'Aegyptus' => [0x13000,['Aegyptus-Regular','Aegyptus']],
+    'Aegyptus-Bold' => [0x13000,['Aegyptus-Bold']],
+    'Gardiner' => [0x13000,['Gardiner-Regular','Gardiner']],
+    'NewGardiner' => [0xe000,['NewGardiner-Medium','NewGardiner']],
+];
+
+if(strtoupper(substr(PHP_OS,0,3))==='WIN') {
+    $red = '';
+    $green = '';
+    $brown = '';
+    $cyan = '';
+    $none = '';
+} else {
+    $red = "\033[0;31m";
+    $green = "\033[0;32m";
+    $brown = "\033[0;33m";
+    $cyan = "\033[0;36m";
+    $none = "\033[0m";
+}
+
+$out = '';
+$font = 'NewGardiner';
+$stroke = '';
+$color = 'black';
+$size = '100';
+$limit = -1;
+for($i = 0,$n = count($argv); $i<$n; ++$i) {
+    $a = $argv[$i];
+    if(strncmp($a,'--out=',6)===0) $out = substr($a,6);
+    elseif(strncmp($a,'--font=',7)===0) $font = substr($a,7);
+    elseif(strncmp($a,'--stroke=',9)===0) $stroke = substr($a,9);
+    elseif(strncmp($a,'--color=',8)===0) $color = substr($a,8);
+    elseif(strncmp($a,'--size=',7)===0) $size = substr($a,7);
+    elseif(strncmp($a,'--limit=',8)===0) $limit = intval(substr($a,8));
+    elseif($a=='-help' || $a=='--help' || $a=='-h') die(
+    'Generate Hieroglyphs
+Usage: generate [options...]
+
+Options:
+      --out=DIR              output directory: [font] (default)
+      --font=FONT            font: NewGardiner (default)
+      --stroke=WIDTH         width (in points) of stroke: none (default)
+      --color=COLOR          fill color: black (default)
+      --size=SIZE            size (in points) of font: 100 (default)
+      --limit=LIMIT          number of glyphs to iterate (-1 for all): -1 (default)
+  -h, --help     display this help and exit
+
+Note: The font has to be installed and the following Hieroglyphic fonts are
+supported: "Aegyptus" (Aegyptus-Regular), "Aegyptus-Bold" (Aegyptus-Bold),
+"Gardiner" (Gardiner-Regular), "NewGardiner" (NewGardiner-Medium)
+'
+    );
+}
+if(!isset($fonts[$font])) die("{$red}Unknown font.$none\n");
+
+command_check('convert','Install imagemagick: sudo apt install imagemagick');
+
+if(!$out) $out = $font;
+if(!is_dir($out)) mkdir($out);
+
+if($limit!==0) {
+    list($unicode,$fontList) = $fonts[$font];
+    if($stroke) $stroke = '-stroke '.$color.' -strokewidth '.$stroke;
+    else $stroke = '-stroke none';
+    $pct = -1;
+    $i = 0;
+    $n = count($glyphs->glyphToUnicode);
+    $fontId = false;
+    foreach($fontList as $f) {
+        $c = utf8_chr($unicode+$i);
+        $x = "convert -background none -fill black -font $f -pointsize 100 label:'$c' -trim /tmp/horushiero.png";
+        $process = proc_open($x,[
+            0 => array('pipe','r'), // STDIN
+            1 => array('pipe','w'), // STDOUT
+            2 => array('pipe','w')  // STDERR
+        ],                   $pipes);
+        $stdErr = stream_get_contents($pipes[2]);
+        proc_close($process);
+        if(empty($stdErr)) {
+            $fontId = $f;
+            break;
+        }
+    }
+    if($fontId===false) die("{$red}Could not load the $font font.$none\n");
+    echo 'Using font: '.$font;
+    foreach($glyphs->glyphToUnicode as $g => $u) {
+        $u = $unicode+$i;
+        $c = utf8_chr($u);
+        ++$i;
+        $x = "convert -background none -fill $color $stroke -font $fontId ".
+             "-pointsize $size label:'$c' -trim $out/$g.png";
+        if($pct!=($p = intval($i*100/$n))) {
+            $pct = $p;
+            printf("\n$green"."[%3d%%]$cyan",$pct);
+        }
+        echo " $g.png";
+        shell_exec($x);
+        if($limit && $i==$limit) break;
+    }
+    echo "\n{$brown}Generated $i glyphs in '$out'.$none\n";
+}
+
+$glyphList = array();
+$n = 0;
+if($dh = opendir($out)) {
+    while(($f = readdir($dh))!==false) {
+        if($f[0]=='.') continue;
+        $g = substr($f,0,strpos($f,'.png'));
+        $s = getimagesize($out.'/'.$f);
+        $glyphList[] = sprintf("%-10s=> ['w' => %3d, 'h' => %3d],","'$g'",$s[0],$s[1]);
+        ++$n;
+    }
+}
+
+sort($glyphList);
+$date = date('Y-m-d H:i:s');
+$script = basename(__FILE__);
+$dir = SRC_DIR."/metrics";
+if(!is_dir($dir)) mkdir($dir);
+$path = "$dir/$font.php";
+file_put_contents(
+    $path,
+    "<?php
+/* Hieroglyphic[$date] This script is generated for the font '$font' by:
+ * $script */
+
+return [
+    ".implode("\n    ",$glyphList)."
+];
+"
+);
+echo "Updated metrics for $n glyphs, saved to '$path'.\n";
